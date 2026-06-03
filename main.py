@@ -3,6 +3,9 @@
 # __________________________________
 import configparser
 from pathlib import Path
+import shutil
+import requests
+from dbfread import DBF
 
 # __________________________________
 # Load and parse configs
@@ -40,30 +43,87 @@ class DBFReader:
     def __init__(self, root_directory):
         self.root_directory = Path(root_directory)
 
-    def list_dbf_files(self):
-        """
-        Recursively find all .dbf files
-        """
+    def find_cti_files(self):
 
         if not self.root_directory.exists():
             raise FileNotFoundError(
                 f"Directory does not exist: {self.root_directory}"
             )
 
-        dbf_files = []
+        files = [
+            f for f in self.root_directory.rglob("*.dbf")
+            if f.name.upper() == "CTI.DBF"
+        ]
 
-        for file in self.root_directory.rglob("*.dbf"):
-            dbf_files.append(file)
+        return sorted(files)
 
-        return sorted(dbf_files)
+    def print_files(self):
+        files = self.find_cti_files()
 
-    def print_dbf_files(self):
-        files = self.list_dbf_files()
+        print(f"\nFound {len(files)} CTI.dbf files:\n")
 
-        print(f"\nFound {len(files)} DBF files:\n")
+        for f in files:
+            print(f)
 
-        for file in files:
-            print(file)
+# __________________________________
+# Loop the CTI files and get data
+# __________________________________
+class CTITransformer:
+
+    def transform(self, record, source_file):
+        return {
+            "source_file": str(source_file),
+            "FCODE": record.get("FCODE,C,6"),
+            "DESC1": record.get("DESC1,C,26"),
+            "DESC2": record.get("DESC2,C,26"),
+            "QTY": record.get("QTY,N,5,0"),
+            "UNITPRICE": record.get("UNITPRICE,N,10,2"),
+            "DATE": record.get("DATE,C,10"),
+            "TIME": record.get("TIME,C,8"),
+        }
+
+# __________________________________
+# Call the API 
+# __________________________________
+class APIClient:
+
+    def __init__(self, base_url):
+        self.base_url = base_url
+
+    def upload(self, payload):
+        response = requests.post(
+            f"{self.base_url}/upload",
+            json=payload,
+            headers={
+                "Content-Type": "application/json"
+            }
+        )
+
+        response.raise_for_status()
+        return response.json()
+
+# __________________________________
+# Archive processed files
+# __________________________________
+class Archiver:
+
+    def __init__(self, archive_root):
+        self.archive_root = Path(archive_root)
+
+    def move_file(self, file_path: Path):
+        file_path = Path(file_path)
+
+        date_folder = file_path.parent.name
+
+        target_dir = self.archive_root / date_folder
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        target_path = target_dir / file_path.name
+
+        shutil.move(str(file_path), str(target_path))
+
+        return target_path
+    
 
 # __________________________________
 # Main execution
@@ -76,7 +136,45 @@ def main():
     print(f"api_base_url: {config.api_base_url}")
 
     reader = DBFReader(config.dbf_directory)
-    reader.print_dbf_files()
+    transformer = CTITransformer()
+    api = APIClient(config.api_base_url)
+    archiver = Archiver(config.archive_directory)
+
+    files = reader.find_cti_files()
+    print(f"Processing {len(files)} CTI files...\n")
+
+    #________________________________
+    # Loop through files
+    #________________________________
+    #for file_path in files:
+    file_path = files[0]  # For testing, process only the first file
+    print(f"Processing: {file_path}")
+
+    table = DBF(file_path, encoding="big5")
+
+    # 2. transform records
+    batch = []
+    for record in table:
+        transformed = transformer.transform(record, file_path)
+        batch.append(transformed)
+
+    # Debug print
+    print(f"Transformed {len(batch)} records from {file_path}")
+
+"""
+    # 3. send to API
+    try:
+        result = api.upload(batch)
+        print("Upload success:", result)
+
+    except Exception as e:
+        print(f"Upload failed for {file_path}: {e}")
+        continue
+
+        # 4. archive file (only if upload succeeded)
+    archived_path = archiver.move_file(file_path)
+    print(f"Archived to: {archived_path}\n")    
+"""
 
 if __name__ == "__main__":
     main()
