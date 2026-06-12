@@ -73,13 +73,13 @@ class CTITransformer:
     def transform(self, record, source_file):
         return {
             "source_file": str(source_file),
-            "FCODE": record.get("FCODE,C,6"),
-            "DESC1": record.get("DESC1,C,26"),
-            "DESC2": record.get("DESC2,C,26"),
-            "QTY": record.get("QTY,N,5,0"),
-            "UNITPRICE": record.get("UNITPRICE,N,10,2"),
-            "DATE": record.get("DATE,C,10"),
-            "TIME": record.get("TIME,C,8"),
+            "FCODE": record.get("FCODE"),
+            "DESC1": record.get("DESC1"),
+            "DESC2": record.get("DESC2"),
+            "QTY": record.get("QTY"),
+            "UNITPRICE": record.get("UNITPRICE"),
+            "DATE": record.get("DATE"),
+            "TIME": record.get("TIME"),
         }
 
 # __________________________________
@@ -92,7 +92,7 @@ class APIClient:
 
     def upload(self, payload):
         response = requests.post(
-            f"{self.base_url}/upload",
+            f"{self.base_url}",
             json=payload,
             headers={
                 "Content-Type": "application/json"
@@ -129,6 +129,7 @@ class Archiver:
 # Main execution
 # __________________________________
 def main():
+
     config = Config()
 
     print(f"dbf_directory: {config.dbf_directory}")
@@ -141,40 +142,111 @@ def main():
     archiver = Archiver(config.archive_directory)
 
     files = reader.find_cti_files()
-    print(f"Processing {len(files)} CTI files...\n")
 
-    #________________________________
+    print(f"\nProcessing {len(files)} CTI files...\n")
+
+    failed_files = []
+    successful_files = []
+
+    # -----------------------------
     # Loop through files
-    #________________________________
-    #for file_path in files:
-    file_path = files[0]  # For testing, process only the first file
-    print(f"Processing: {file_path}")
+    # -----------------------------
+    for file_path in files:
 
-    table = DBF(file_path, encoding="big5")
+        try:
 
-    # 2. transform records
-    batch = []
-    for record in table:
-        transformed = transformer.transform(record, file_path)
-        batch.append(transformed)
+            print(f"\nProcessing: {file_path}")
 
-    # Debug print
-    print(f"Transformed {len(batch)} records from {file_path}")
+            # Read DBF
+            table = DBF(file_path, encoding="big5")
 
-"""
-    # 3. send to API
-    try:
-        result = api.upload(batch)
-        print("Upload success:", result)
+            # Transform records
+            batch = []
 
-    except Exception as e:
-        print(f"Upload failed for {file_path}: {e}")
-        continue
+            for record in table:
+                transformed = transformer.transform(
+                    record,
+                    file_path
+                )
+                batch.append(transformed)
 
-        # 4. archive file (only if upload succeeded)
-    archived_path = archiver.move_file(file_path)
-    print(f"Archived to: {archived_path}\n")    
-"""
+            print(
+                f"Transformed {len(batch)} records "
+                f"from {file_path}"
+            )
+
+            if batch:
+                print(f"Sample record: {batch[0]}")
+
+            # Upload
+            result = api.upload(batch)
+
+            print(
+                f"Upload success: "
+                f"{result}"
+            )
+
+            # Archive only after successful upload
+            archived_path = archiver.move_file(
+                file_path
+            )
+
+            print(
+                f"Archived to: "
+                f"{archived_path}"
+            )
+
+            successful_files.append(str(file_path))
+
+        except Exception as e:
+
+            error_message = str(e)
+
+            if hasattr(e, "response") and e.response is not None:
+                error_message += (
+                    f"\nStatus: {e.response.status_code}"
+                    f"\nResponse: {e.response.text}"
+                )
+
+            failed_files.append({
+                "file": str(file_path),
+                "error": error_message
+            })
+
+            print(
+                f"Failed processing "
+                f"{file_path}"
+            )
+
+            continue
+
+    # -----------------------------
+    # Final Summary
+    # -----------------------------
+
+    print("\n==============================")
+    print("PROCESSING COMPLETE")
+    print("==============================")
+
+    print(
+        f"Successful: "
+        f"{len(successful_files)}"
+    )
+
+    print(
+        f"Failed: "
+        f"{len(failed_files)}"
+    )
+
+    if failed_files:
+
+        print("\nFailed Files:")
+
+        for item in failed_files:
+
+            print("\n------------------")
+            print(f"File: {item['file']}")
+            print(f"Error:\n{item['error']}")
 
 if __name__ == "__main__":
     main()
